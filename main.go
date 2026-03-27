@@ -1,31 +1,25 @@
-// vkube-mcp：与 v-kube-service 无关的独立 MCP（SSE）服务，仅依赖 gin 与 gin-mcp。
+// vkube-mcp：独立 MCP 服务，使用官方 go-sdk 的 Streamable HTTP（与 Cursor 兼容）。
 package main
 
 import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	listen := getenv("VKUBE_MCP_LISTEN", ":3100")
-	publicBase := getenv("VKUBE_MCP_PUBLIC_BASE_URL", defaultPublicBaseURL(listen))
+	mcpPath := getenv("VKUBE_MCP_HTTP_PATH", "/mcp")
+	publicHint := getenv("VKUBE_MCP_PUBLIC_BASE_URL", defaultPublicBaseURL(listen))
 
-	if strings.EqualFold(os.Getenv("GIN_MODE"), "release") {
-		gin.SetMode(gin.ReleaseMode)
-	} else {
-		gin.SetMode(gin.DebugMode)
-	}
+	h := newHTTPHandler(mcpPath, publicHint)
+	base := strings.TrimSuffix(publicHint, "/")
+	log.Printf("vkube-mcp: MCP Streamable HTTP at path %q — set Cursor mcp.json url to: %s%s", mcpPath, base, mcpPath)
 
-	app := newEngine(publicBase)
-	app.Use(gin.Logger())
-
-	log.Printf("vkube-mcp listen=%s public_base_url=%s", listen, publicBase)
-	if err := app.Run(listen); err != nil {
+	if err := listenAndServe(listen, h); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }

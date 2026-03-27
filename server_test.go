@@ -5,33 +5,30 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestHTTPServer_RealTCPPort 在真实 TCP 端口上起服务并发 HTTP 请求（与 httptest 内存复现不同）。
 func TestHTTPServer_RealTCPPort(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln.Close()
 
 	addr := ln.Addr().String()
 	baseURL := "http://" + addr
-	app := newEngine(baseURL)
+	h := newHTTPHandlerWithStreamableOpts("/mcp", baseURL, &mcp.StreamableHTTPOptions{JSONResponse: true})
 
 	srv := &http.Server{
-		Handler:           app,
+		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.Serve(ln)
-	}()
+	go func() { errCh <- srv.Serve(ln) }()
 	defer func() {
 		_ = srv.Close()
 		select {
@@ -40,39 +37,41 @@ func TestHTTPServer_RealTCPPort(t *testing.T) {
 		}
 	}()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 
-	t.Run("vkubefile", func(t *testing.T) {
-		res, err := client.Get(baseURL + "/api/v1/mcp/vkubefile")
+	t.Run("healthz", func(t *testing.T) {
+		res, err := client.Get(baseURL + "/healthz")
 		require.NoError(t, err)
 		defer res.Body.Close()
 		assert.Equal(t, http.StatusOK, res.StatusCode)
-		b, err := io.ReadAll(res.Body)
-		require.NoError(t, err)
-		assert.Contains(t, string(b), "jsonrpc")
-		assert.Contains(t, string(b), "VKubeFile")
 	})
 
-	t.Run("deployCommand", func(t *testing.T) {
-		res, err := client.Get(baseURL + "/api/v1/mcp/deployCommand")
+	t.Run("mcp_post_initialize", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		res, err := client.Do(req)
 		require.NoError(t, err)
 		defer res.Body.Close()
-		assert.Equal(t, http.StatusOK, res.StatusCode)
-		b, err := io.ReadAll(res.Body)
-		require.NoError(t, err)
-		assert.Contains(t, string(b), "vkube deploy -f")
+		b, _ := io.ReadAll(res.Body)
+		assert.GreaterOrEqual(t, res.StatusCode, 200)
+		assert.Less(t, res.StatusCode, 300, "body=%s", string(b))
 	})
 }
 
-// TestHTTPServer_httptestServer 使用 httptest 在随机端口监听并发请求。
-func TestHTTPServer_httptestServer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ts := httptest.NewUnstartedServer(newEngine("http://127.0.0.1:1"))
-	ts.Start()
+func TestHTTPServer_httptestMCPPath(t *testing.T) {
+	ts := httptestNewServerWithMCP(t)
 	defer ts.Close()
 
-	res, err := http.Get(ts.URL + "/api/v1/mcp/vkubefile")
+	res, err := http.Get(ts.URL + "/healthz")
 	require.NoError(t, err)
 	defer res.Body.Close()
 	assert.Equal(t, http.StatusOK, res.StatusCode)
+}
+
+func httptestNewServerWithMCP(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(newHTTPHandlerWithStreamableOpts("/mcp", "http://127.0.0.1:1", &mcp.StreamableHTTPOptions{JSONResponse: true}))
 }

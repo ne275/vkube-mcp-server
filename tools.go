@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 
-	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const vkubeFileInteractiveGuide = `# VKubeFile Interactive Generation Guide
@@ -68,50 +68,43 @@ containers:
 ---
 Now, start interacting with the user! Begin by asking for the "vkubeToken" and, when all required fields are collected, directly output the final VKubeFile YAML.`
 
-func toJSON(v interface{}) string {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	return string(data)
+func registerTools(s *mcp.Server) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_vkube_file_schema",
+		Description: "Returns the VKubeFile JSON schema and an interactive guide for collecting user input to generate vkubefile.yaml",
+	}, toolGetVKubeFileSchema)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "deploy_vkube_file",
+		Description: "Builds a suggested vkube deploy -f <path> command for a local VKubeFile",
+	}, toolDeployVKubeFile)
 }
 
-// handleGetVKubeFileSchema 返回 VKubeFile 的结构化 schema，用于引导 AI 交互式收集用户信息
-func handleGetVKubeFileSchema(ctx *gin.Context) {
+func toolGetVKubeFileSchema(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 	schema := defaultVKubeFileSchema()
-	ctx.JSON(200, gin.H{
-		"jsonrpc": "2.0",
-		"id":      nil,
-		"result": map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": vkubeFileInteractiveGuide,
-				},
-				{
-					"type":     "resource",
-					"mimeType": "application/json",
-					"text":     toJSON(schema),
-				},
-			},
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: vkubeFileInteractiveGuide},
+			&mcp.TextContent{Text: toJSON(schema)},
 		},
-	})
+	}, nil, nil
 }
 
-func handleDeployCommand(ctx *gin.Context) {
-	const defaultVKubeFilePath = "/path/to/vkubefile.yaml"
-	var request struct {
-		VKubeFilePath string `json:"vkubeFilePath"`
+type deployToolInput struct {
+	VkubeFilePath string `json:"vkubeFilePath" jsonschema:"Local path to vkubefile.yaml (optional; default placeholder if empty)"`
+}
+
+func toolDeployVKubeFile(_ context.Context, _ *mcp.CallToolRequest, in deployToolInput) (*mcp.CallToolResult, any, error) {
+	const defaultPath = "/path/to/vkubefile.yaml"
+	path := in.VkubeFilePath
+	if path == "" {
+		path = defaultPath
 	}
-	if err := ctx.ShouldBindJSON(&request); err != nil || request.VKubeFilePath == "" {
-		request.VKubeFilePath = defaultVKubeFilePath
-	}
-	deployCommand := fmt.Sprintf("vkube deploy -f %s", request.VKubeFilePath)
-	ctx.JSON(200, gin.H{
-		"jsonrpc": "2.0",
-		"id":      nil,
-		"result": map[string]interface{}{
-			"message":      "以下是生成的部署命令，请确认路径是否正确并决定是否执行。如果您有本地的 vkubefile.yaml 文件，请提供其完整路径以替换默认路径。",
-			"command":      deployCommand,
-			"defaultPath":  request.VKubeFilePath,
-			"instructions": "请在本地查找 vkubefile.yaml 文件（或您自定义的文件名），并将其路径提供给程序。例如：/home/user/vkubefile.yaml",
-		},
-	})
+	cmd := fmt.Sprintf("vkube deploy -f %s", path)
+	msg := "以下是生成的部署命令，请确认路径是否正确并决定是否执行。如果您有本地的 vkubefile.yaml 文件，请提供其完整路径以替换默认路径。"
+	inst := "请在本地查找 vkubefile.yaml 文件（或您自定义的文件名），并将其路径提供给程序。例如：/home/user/vkubefile.yaml"
+	out := fmt.Sprintf("%s\n\ncommand: %s\ndefaultPath: %s\n\n%s", msg, cmd, path, inst)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: out}},
+	}, nil, nil
 }
